@@ -6,7 +6,7 @@
 
 ## Dupla
 
-**Nome da dupla:** ____________________
+**Nome da dupla:** Carlos Alexandre Dias Messias de Lima e Maria Luiza Oliveira Teodoro
 
 | Nome | Matrícula | Usuário do GitHub |
 | --- | --- | --- |
