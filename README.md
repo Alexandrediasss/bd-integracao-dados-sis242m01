@@ -6,12 +6,12 @@
 
 ## Dupla
 
-**Nome da dupla:** Carlos Alexandre Dias Messias de Lima e Maria Luiza Oliveira Teodoro
+**Nome da dupla:** 
 
 | Nome | Matrícula | Usuário do GitHub |
 | --- | --- | --- |
-|  |  |  |
-|  |  |  |
+| Carlos Alexandre Dias Messias de Lima | 2423449 | Alexandrediasss |
+| Maria Luiza Oliveira Teodoro | 2538557 | MariaLuiza007-Teo |
 
 ## O cenário
 
