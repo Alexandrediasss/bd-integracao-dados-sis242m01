@@ -164,3 +164,117 @@ SELECT p.produto_id,
  WHERE p.data_pedido BETWEEN DATE '2025-01-01' AND DATE '2025-03-31'
  GROUP BY p.produto_id
  ORDER BY COUNT(*) DESC, p.produto_id;
+
+
+-- ============================================================
+-- 3.4 Trigger: gera automaticamente um novo idfornecedor
+-- ============================================================
+-- O que faz: ao inserir um produto em produtos_filial SEM idfornecedor
+-- (NULL ou vazio), a trigger:
+--   1. gera o próximo código de fornecedor (F21, F22, ...);
+--   2. cria esse fornecedor na tabela fornecedor;
+--   3. grava o código no produto.
+-- Assim o produto sempre fica relacionado a um fornecedor que existe (a
+-- chave estrangeira produtos_filial_fornecedor_fk continua valendo).
+-- Se o produto já vier com fornecedor, a trigger não mexe em nada.
+--
+-- Decisões:
+--   * "idfornecedor numérico" (enunciado): na base o código é texto com
+--     prefixo (F1 a F20), e é por esse texto que fornecedor se liga a
+--     produtos_filial e pedido_compra. Para não quebrar a relação, o que é
+--     numérico e sequencial é a parte depois do "F". Trocar para int
+--     exigiria mudar o DDL e converter os dados das três tabelas.
+--   * SEQUENCE em vez de MAX()+1: com MAX()+1, dois cadastros simultâneos
+--     leriam o mesmo MAX e gerariam o mesmo código. nextval() nunca entrega
+--     o mesmo número duas vezes, nem em transações paralelas.
+--   * O LOOP pula códigos que já existam (ex.: alguém cadastrou F21 à mão),
+--     em vez de dar erro de chave duplicada.
+--   * BEFORE INSERT: a trigger precisa alterar a linha (NEW) antes de ela
+--     ser gravada. O fornecedor é criado antes do produto, então a FK já
+--     encontra o fornecedor quando é verificada.
+--   * razao_social é NOT NULL: o fornecedor nasce com uma razão social
+--     provisória ("A DEFINIR ..."), que o cliente deve completar depois.
+--   * Sequência e ROLLBACK: nextval() não volta atrás em ROLLBACK, então
+--     um teste desfeito "gasta" um número (pode haver buraco, ex.: F21 e
+--     depois F23). É o comportamento normal e esperado de sequences. O que
+--     importa é o código ser único.
+
+-- Sequência dos números de fornecedor, começando após o maior código atual
+-- (F20 -> o próximo será F21). O setval deixa o script seguro para rodar
+-- de novo, mesmo depois de recriar as tabelas com o 01_ddl_postgres.sql.
+CREATE SEQUENCE IF NOT EXISTS public.fornecedor_codigo_seq;
+
+SELECT setval('public.fornecedor_codigo_seq',
+              COALESCE((SELECT MAX(SUBSTRING(idfornecedor FROM 2)::int)
+                          FROM public.fornecedor
+                         WHERE idfornecedor ~ '^F[0-9]+$'), 0) + 1,
+              false);  -- false: o próximo nextval() devolve exatamente esse valor
+
+CREATE OR REPLACE FUNCTION public.fn_gera_idfornecedor()
+RETURNS trigger
+LANGUAGE plpgsql
+AS $$
+DECLARE
+    v_codigo varchar(25);
+BEGIN
+    -- produto já veio com fornecedor: respeita o que foi informado
+    IF NULLIF(TRIM(NEW.idfornecedor), '') IS NOT NULL THEN
+        RETURN NEW;
+    END IF;
+
+    -- próximo código livre: F + número da sequência
+    LOOP
+        v_codigo := 'F' || nextval('public.fornecedor_codigo_seq');
+        EXIT WHEN NOT EXISTS (SELECT 1
+                                FROM public.fornecedor
+                               WHERE idfornecedor = v_codigo);
+    END LOOP;
+
+    -- cria o fornecedor relacionado
+    INSERT INTO public.fornecedor (idfornecedor, razao_social)
+    VALUES (v_codigo, 'A DEFINIR - gerado automaticamente para o produto ' || NEW.produto_id);
+
+    -- relaciona o produto ao fornecedor criado
+    NEW.idfornecedor := v_codigo;
+    RETURN NEW;
+END;
+$$;
+
+DROP TRIGGER IF EXISTS trg_gera_idfornecedor ON public.produtos_filial;
+
+CREATE TRIGGER trg_gera_idfornecedor
+    BEFORE INSERT ON public.produtos_filial
+    FOR EACH ROW
+    EXECUTE FUNCTION public.fn_gera_idfornecedor();
+
+
+-- ------------------------------------------------------------
+-- Teste da trigger
+-- ------------------------------------------------------------
+-- Roda dentro de uma transação desfeita no fim (ROLLBACK), para não
+-- deixar produtos e fornecedores de teste na base que vai ser validada
+-- com o cliente (as contagens da Parte 1 continuam 20 / 20).
+--   P30: sem fornecedor (NULL)  -> deve ganhar F21 (criado em fornecedor)
+--   P31: fornecedor vazio ('')  -> deve ganhar F22
+--   P32: já com fornecedor F3   -> deve continuar F3 (nada é criado)
+
+BEGIN;
+
+INSERT INTO public.produtos_filial (filial_id, produto_id, descricao, idfornecedor)
+VALUES (1, 'P30', 'Detergente',  NULL),
+       (1, 'P31', 'Sabão em pó', ''),
+       (1, 'P32', 'Esponja',     'F3');
+
+SELECT CONCAT_WS(' - ', pf.produto_id, pf.descricao) AS produto,
+       pf.idfornecedor,
+       f.razao_social
+  FROM public.produtos_filial pf
+  JOIN public.fornecedor f ON f.idfornecedor = pf.idfornecedor
+ WHERE pf.produto_id IN ('P30', 'P31', 'P32')
+ ORDER BY pf.produto_id;
+
+SELECT COUNT(*) AS fornecedores_durante_o_teste FROM public.fornecedor;  -- 22
+
+ROLLBACK;
+
+SELECT COUNT(*) AS fornecedores_depois_do_rollback FROM public.fornecedor;  -- 20
